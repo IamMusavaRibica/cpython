@@ -74,9 +74,7 @@ def _strerror(err):
     try:
         return os.strerror(err)
     except (ValueError, OverflowError, NameError):
-        if err in errorcode:
-            return errorcode[err]
-        return "Unknown error %s" %err
+        return errorcode[err] if err in errorcode else f"Unknown error {err}"
 
 class ExitNow(Exception):
     pass
@@ -198,11 +196,7 @@ def loop(timeout=30.0, use_poll=False, map=None, count=None):
     if map is None:
         map = socket_map
 
-    if use_poll and hasattr(select, 'poll'):
-        poll_fun = poll2
-    else:
-        poll_fun = poll
-
+    poll_fun = poll2 if use_poll and hasattr(select, 'poll') else poll
     if count is None:
         while map:
             poll_fun(timeout, map)
@@ -223,11 +217,7 @@ class dispatcher:
     ignore_log_types = frozenset({'warning'})
 
     def __init__(self, sock=None, map=None):
-        if map is None:
-            self._map = socket_map
-        else:
-            self._map = map
-
+        self._map = socket_map if map is None else map
         self._fileno = None
 
         if sock:
@@ -255,7 +245,7 @@ class dispatcher:
             self.socket = None
 
     def __repr__(self):
-        status = [self.__class__.__module__+"."+self.__class__.__qualname__]
+        status = [f"{self.__class__.__module__}.{self.__class__.__qualname__}"]
         if self.accepting and self.addr:
             status.append('listening')
         elif self.connected:
@@ -335,14 +325,13 @@ class dispatcher:
         self.connecting = True
         err = self.socket.connect_ex(address)
         if err in (EINPROGRESS, EALREADY, EWOULDBLOCK) \
-        or err == EINVAL and os.name == 'nt':
+            or err == EINVAL and os.name == 'nt':
             self.addr = address
             return
-        if err in (0, EISCONN):
-            self.addr = address
-            self.handle_connect_event()
-        else:
+        if err not in (0, EISCONN):
             raise OSError(err, errorcode[err])
+        self.addr = address
+        self.handle_connect_event()
 
     def accept(self):
         # XXX can return either an address pair or None
@@ -360,8 +349,7 @@ class dispatcher:
 
     def send(self, data):
         try:
-            result = self.socket.send(data)
-            return result
+            return self.socket.send(data)
         except OSError as why:
             if why.errno == EWOULDBLOCK:
                 return 0
@@ -373,21 +361,17 @@ class dispatcher:
 
     def recv(self, buffer_size):
         try:
-            data = self.socket.recv(buffer_size)
-            if not data:
-                # a closed connection is indicated by signaling
-                # a read condition, and having recv() return 0.
-                self.handle_close()
-                return b''
-            else:
+            if data := self.socket.recv(buffer_size):
                 return data
+            # a closed connection is indicated by signaling
+            # a read condition, and having recv() return 0.
+            self.handle_close()
+            return b''
         except OSError as why:
-            # winsock sometimes raises ENOTCONN
-            if why.errno in _DISCONNECTED:
-                self.handle_close()
-                return b''
-            else:
+            if why.errno not in _DISCONNECTED:
                 raise
+            self.handle_close()
+            return b''
 
     def close(self):
         self.connected = False
@@ -410,7 +394,7 @@ class dispatcher:
 
     def log_info(self, message, type='info'):
         if type not in self.ignore_log_types:
-            print('%s: %s' % (type, message))
+            print(f'{type}: {message}')
 
     def handle_read_event(self):
         if self.accepting:
@@ -438,9 +422,8 @@ class dispatcher:
             # We will pretend it didn't happen.
             return
 
-        if not self.connected:
-            if self.connecting:
-                self.handle_connect_event()
+        if not self.connected and self.connecting:
+            self.handle_connect_event()
         self.handle_write()
 
     def handle_expt_event(self):
@@ -468,14 +451,10 @@ class dispatcher:
             self_repr = '<__repr__(self) failed for object at %0x>' % id(self)
 
         self.log_info(
-            'uncaptured python exception, closing channel %s (%s:%s %s)' % (
-                self_repr,
-                t,
-                v,
-                tbinfo
-                ),
-            'error'
-            )
+            f'uncaptured python exception, closing channel {self_repr} ({t}:{v} {tbinfo})',
+            'error',
+        )
+
         self.handle_close()
 
     def handle_expt(self):
@@ -527,7 +506,7 @@ class dispatcher_with_send(dispatcher):
 
     def send(self, data):
         if self.debug:
-            self.log_info('sending %s' % repr(data))
+            self.log_info(f'sending {repr(data)}')
         self.out_buffer = self.out_buffer + data
         self.initiate_send()
 
